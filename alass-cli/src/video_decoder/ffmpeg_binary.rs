@@ -200,7 +200,7 @@ impl VideoDecoderFFmpegBinary {
                 DecoderErrorKind::ExtractingMetadataFailed {
                     file_path: file_path_buf.clone(),
                     cmd_path: ffprobe_path.clone(),
-                    args: args,
+                    args: args.clone(),
                 }
             })?;
 
@@ -216,22 +216,16 @@ impl VideoDecoderFFmpegBinary {
                 .find(|s| s.index == ai)
         };
 
-        let best_stream: Stream;
-        match best_stream_opt {
-            Some(x) => best_stream = x,
-            None => {
-                return Err(DecoderError::from(DecoderErrorKind::NoAudioStream {
-                    path: file_path.as_ref().into(),
-                }))
-            }
-        }
+        let best_stream: Stream = best_stream_opt.ok_or_else(|| DecoderError::from(DecoderErrorKind::NoAudioStream {
+            path: file_path.as_ref().into(),
+        }))?;
 
         let ffmpeg_path: PathBuf = std::env::var_os("ALASS_FFMPEG_PATH")
             .unwrap_or(OsString::from("ffmpeg"))
             .into();
 
-        let args: Vec<OsString> = vec![
-            // only print errors
+        // Prepare the ffmpeg args vector, but now conditionally including the `-af pan=...` filter for 5.1 or 7.1 audio.
+        let mut args: Vec<OsString> = vec![
             OsString::from("-v"),
             OsString::from("error"),
             // "yes" -> disables user interaction
@@ -242,7 +236,18 @@ impl VideoDecoderFFmpegBinary {
             // select stream
             OsString::from("-map"),
             format!("0:{}", best_stream.index).into(),
-            // audio codec: 16-bit signed little endian
+        ];
+
+        // Conditionally apply `pan` filter for 5.1 or 7.1 channel audio
+        if let Some(channels) = best_stream.channels {
+            if channels == 6 || channels == 8 {
+            // 5.1 or 7.1 audio: extract center channel
+            args.push(OsString::from("-af"));
+            args.push(OsString::from("pan=mono|c0=FC"));
+            }
+        }
+
+        args.extend([
             OsString::from("-acodec"),
             OsString::from("pcm_s16le"),
             // resample to 8khz
@@ -256,7 +261,7 @@ impl VideoDecoderFFmpegBinary {
             OsString::from("s16le"),
             // output to stdout pipe
             OsString::from("-"),
-        ];
+        ]);
 
         let format_opt: Option<Format> = metadata.format;
 
